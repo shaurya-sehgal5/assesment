@@ -1,155 +1,139 @@
-﻿from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
-BASE_URL = "https://data.elexon.co.uk/bmrs/api/v1/datasets"
-WIND_HISTORY_URL = (
-    "https://data.elexon.co.uk/bmrs/api/v1/forecast/generation/wind/history"
-)
+
+BASE_URL = "https://data.elexon.co.uk/bmrs/api/v1"
+ACTUALS_URL = f"{BASE_URL}/datasets/FUELHH/stream"
+FORECASTS_URL = f"{BASE_URL}/datasets/WINDFOR"
 
 
-class ElexonDataError(RuntimeError):
+class ElexonDataError(Exception):
     """Raised when Elexon data cannot be retrieved or validated."""
 
 
-def parse_timestamp(value: str) -> datetime:
-    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if result.tzinfo is None:
-        raise ValueError(f"Timestamp must include a timezone: {value}")
-    return result.astimezone(timezone.utc)
+def parse_timestamp(value):
+    if not value:
+        raise ElexonDataError("Missing timestamp in Elexon response.")
+
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
 
 
-def normalize_records(payload: Any) -> list[dict[str, Any]]:
+def normalize_records(payload):
     if isinstance(payload, list):
-        records = payload
-    elif isinstance(payload, dict):
-        records = payload.get("data", payload.get("results", payload.get("value")))
-    else:
-        records = None
+        return payload
 
-    if not isinstance(records, list):
-        raise ElexonDataError(
-            f"Unexpected Elexon response structure: {type(payload).__name__}"
-        )
-    if not all(isinstance(row, dict) for row in records):
-        raise ElexonDataError("Elexon response contains a non-object record")
-    return records
+    if isinstance(payload, dict):
+        for key in ("data", "results", "value"):
+            if isinstance(payload.get(key), list):
+                return payload[key]
+
+    raise ElexonDataError("Unexpected response format from Elexon.")
 
 
 class ElexonClient:
-    def __init__(self, timeout: float = 45.0) -> None:
-        self.timeout = timeout
-
-    def _get_json(self, url: str, params: dict[str, str]) -> Any:
+    def _get_json(self, url, params):
         try:
-            response = httpx.get(url, params=params, timeout=self.timeout)
+            response = httpx.get(url, params=params, timeout=60.0)
             response.raise_for_status()
             return response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             raise ElexonDataError(f"Elexon request failed: {exc}") from exc
+        except ValueError as exc:
+            raise ElexonDataError("Elexon returned invalid JSON.") from exc
 
-    def fetch_actuals(
-        self, start: datetime, end: datetime
-    ) -> list[dict[str, Any]]:
-        if start.tzinfo is None or end.tzinfo is None or start >= end:
-            raise ValueError("Provide valid timezone-aware start and end times")
+    def fetch_actuals(self, start, end):
+        start = parse_timestamp(start.isoformat())
+        end = parse_timestamp(end.isoformat())
 
-        start_utc = start.astimezone(timezone.utc)
-        end_utc = end.astimezone(timezone.utc)
+        if start >= end:
+            raise ValueError("Invalid date range: start must be before end.")
 
-        # FUELHH stream filters on publication timestamps. We separately
-        # filter the returned records by delivery startTime below.
         payload = self._get_json(
-            f"{BASE_URL}/FUELHH/stream",
+            ACTUALS_URL,
             {
-                "publishDateTimeFrom": start_utc.isoformat(),
-                "publishDateTimeTo": end_utc.isoformat(),
+                "publishDateTimeFrom": (start - timedelta(hours=2)).isoformat(),
+                "publishDateTimeTo": (end + timedelta(hours=1)).isoformat(),
                 "fuelType": "WIND",
             },
         )
 
         records = normalize_records(payload)
-        filtered = []
+        actuals = []
 
         for record in records:
             if record.get("fuelType") != "WIND":
                 continue
-            if not isinstance(record.get("startTime"), str):
-                continue
-            if record.get("generation") is None:
-                continue
 
-            try:
-                delivery_time = parse_timestamp(record["startTime"])
-                float(record["generation"])
-            except (ValueError, TypeError):
-                continue
+            delivery_time = parse_timestamp(record["startTime"])
 
-            if start_utc <= delivery_time < end_utc:
-                filtered.append(record)
+            if start <= delivery_time < end:
+                actuals.append(record)
 
-        filtered.sort(key=lambda row: parse_timestamp(row["startTime"]))
+        actuals.sort(key=lambda row: row["startTime"])
 
-        if not filtered:
-            raise ElexonDataError(
-                "Elexon returned no WIND actuals for the requested delivery period"
-            )
+        if not actuals:
+            raise ElexonDataError("No wind actuals found for the requested period.")
 
-        return filtered
+        return actuals
 
-    def fetch_forecasts(
-        self, start: datetime, end: datetime
-    ) -> list[dict[str, Any]]:
-        if start.tzinfo is None or end.tzinfo is None or start >= end:
-            raise ValueError("Provide valid timezone-aware start and end times")
+    def fetch_forecasts(self, start, end):
+        start = parse_timestamp(start.isoformat())
+        end = parse_timestamp(end.isoformat())
 
-        start_utc = start.astimezone(timezone.utc)
-        end_utc = end.astimezone(timezone.utc)
-
-        # Request the forecast vintage before the delivery day begins.
-        requested_publish_time = start_utc - timedelta(minutes=30)
-
+        # Retrieve vintages published during the 24 hours before delivery starts.
         payload = self._get_json(
-            WIND_HISTORY_URL,
-            {"publishTime": requested_publish_time.isoformat()},
+            FORECASTS_URL,
+            {
+                "publishDateTimeFrom": (start - timedelta(hours=24)).isoformat(),
+                "publishDateTimeTo": start.isoformat(),
+            },
         )
 
         records = normalize_records(payload)
-        filtered = []
+
+        # Trust the publication timestamps in the returned records, not just
+        # the endpoint's requested publication-time range.
+        eligible = []
 
         for record in records:
-            if not isinstance(record.get("startTime"), str):
-                continue
-            if record.get("generation") is None:
+            if not record.get("publishTime") or not record.get("startTime"):
                 continue
 
-            try:
-                delivery_time = parse_timestamp(record["startTime"])
-                float(record["generation"])
-                published_at = parse_timestamp(record["publishTime"])
-            except (KeyError, ValueError, TypeError):
-                continue
+            published = parse_timestamp(record["publishTime"])
+            delivery = parse_timestamp(record["startTime"])
 
-            # Never use a forecast published at or after delivery begins.
-            if published_at >= start_utc:
-                continue
+            if published <= start and start <= delivery < end:
+                eligible.append(record)
 
-            if start_utc <= delivery_time < end_utc:
-                filtered.append(record)
-
-        filtered.sort(key=lambda row: parse_timestamp(row["startTime"]))
-
-        if not filtered:
+        if not eligible:
             raise ElexonDataError(
-                "Elexon returned no eligible historical forecasts for this day"
+                "No pre-delivery wind forecast vintage found for the requested period."
             )
 
-        # Do not silently combine forecast revisions.
-        publication_times = {row["publishTime"] for row in filtered}
-        if len(publication_times) != 1:
+        selected_publish_time = max(
+            parse_timestamp(record["publishTime"]) for record in eligible
+        )
+
+        forecasts = [
+            record for record in eligible
+            if parse_timestamp(record["publishTime"]) == selected_publish_time
+        ]
+
+        forecasts.sort(key=lambda row: row["startTime"])
+
+        if len(forecasts) != 24:
             raise ElexonDataError(
-                "Multiple forecast vintages returned for the requested day"
+                f"Expected 24 hourly forecasts, found {len(forecasts)} "
+                f"for vintage {selected_publish_time.isoformat()}."
             )
 
-        return filtered
+        if any(record.get("generation") is None for record in forecasts):
+            raise ElexonDataError("Selected forecast vintage contains missing generation.")
+
+        return forecasts
