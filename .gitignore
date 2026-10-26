@@ -21,3 +21,24 @@ npm-debug.log*
 
 # Logs and local data
 *.log
+# Ignore local environments, generated output, and secrets
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.env
+.env.*
+!.env.example
+node_modules/
+frontend/dist/
+npm-debug.log*
+.vscode/
+.idea/
+
+# Ignore temporary Elexon investigation files
+sample_data/*probe*.json
+
+# Keep the reproducible snapshots
+!sample_data/actuals-raw.json
+!sample_data/forecasts-raw.json

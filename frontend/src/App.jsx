@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import "./App.css";
 
-const API = import.meta.env.VITE_API_URL || "";
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 function formatNumber(value) {
   return Number(value).toLocaleString("en-GB", {
@@ -75,7 +75,7 @@ export default function App() {
     loadData(date);
   }, []);
 
-  const chartData = (data?.hourlyResults ?? []).map((row) => ({
+  const chartData = (data?.hourlyResults || []).map((row) => ({
     ...row,
     time: formatTime(row.startTime),
   }));
@@ -120,7 +120,7 @@ export default function App() {
               required
             />
             <button type="submit" disabled={loading}>
-              {loading ? "Loading…" : "Analyze"}
+              {loading ? "LoadingÃ¢â‚¬Â¦" : "Analyze"}
             </button>
           </div>
         </form>
@@ -128,7 +128,7 @@ export default function App() {
 
       {loading && (
         <div className="message-panel" role="status">
-          Retrieving actuals and historical forecasts from Elexon…
+          Retrieving actuals and historical forecasts from ElexonÃ¢â‚¬Â¦
         </div>
       )}
 
@@ -159,9 +159,14 @@ export default function App() {
               detail="Absolute error / total actual"
             />
             <MetricCard
+              label="Mean bias"
+              value={`${data.meanBiasError > 0 ? "+" : ""}${formatNumber(data.meanBiasError)} MW`}
+              detail={data.biasDirection === "overforecast" ? "Systematic overforecast" : data.biasDirection === "underforecast" ? "Systematic underforecast" : "No average directional bias"}
+            />
+            <MetricCard
               label="Matched delivery hours"
               value={`${data.matchedHours} / 24`}
-              detail={`${data.actualRecords} actual records · ${data.forecastRecords} forecasts`}
+              detail={`${data.actualRecords} actual records Ã‚Â· ${data.forecastRecords} forecasts`}
             />
           </section>
 
@@ -277,10 +282,12 @@ export default function App() {
       )}
 
       <footer>
-        <span>Windwise · Wind generation analytics</span>
-        <span>Times shown in UTC · Data source: Elexon</span>
+        <span>Windwise Ã‚Â· Wind generation analytics</span>
+        <span>Times shown in UTC Ã‚Â· Data source: Elexon</span>
       </footer>
     </main>
   );
 }
+
+
 

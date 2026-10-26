@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 from math import sqrt
 from typing import Any
@@ -99,6 +99,8 @@ def calculate_accuracy(
     absolute_errors = [abs(error) for error in errors]
     actual_total = sum(row["actual"] for row in rows)
 
+    mean_bias = sum(errors) / len(errors)
+
     return {
         "forecastPublishTime": (
             next(iter(publication_times)).isoformat().replace("+00:00", "Z")
@@ -110,6 +112,12 @@ def calculate_accuracy(
         "wapePercent": (
             round(sum(absolute_errors) / actual_total * 100, 3)
             if actual_total else None
+        ),
+        "meanBiasError": round(mean_bias, 3),
+        "biasDirection": (
+            "overforecast" if mean_bias > 0
+            else "underforecast" if mean_bias < 0
+            else "unbiased on average"
         ),
         "hourlyResults": rows,
     }

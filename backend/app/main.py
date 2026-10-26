@@ -1,4 +1,5 @@
-﻿from datetime import datetime, time, timedelta, timezone
+import os
+from datetime import datetime, time, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,16 +16,24 @@ app = FastAPI(
     version="0.2.0",
 )
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "https://heartfelt-strudel-78ff8a.netlify.app",
+        *[
+            origin.strip().rstrip("/")
+            for origin in os.getenv("FRONTEND_ORIGIN", "").split(",")
+            if origin.strip()
+        ],
     ],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 client = ElexonClient()
 
